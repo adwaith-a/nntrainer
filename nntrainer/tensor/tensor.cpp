@@ -54,6 +54,27 @@
           }                                                           \
   } while (0);
 
+
+#define transposeloop_nhwc(cl, ci, cj, ck, sl, si, sj, sk)            \
+  do {                                                                \
+    unsigned int i, j, k, l;                                          \
+    int inidx = 0, outidx = 0;                                        \
+    for (cl = 0; cl < sl; cl++)                                       \
+      for (ci = 0; ci < si; ci++)                                     \
+        for (cj = 0; cj < sj; cj++)                                   \
+          for (ck = 0; ck < sk; ck++) {                               \
+            outidx = si * sj * sk * cl + sj * sk * ci + sk * cj + ck; \
+            inidx = l * SJ * SK * SI + j * SK * SI + k * SI + i;      \
+            outptr[outidx] = inptr[inidx];                            \
+          }                                                           \
+  } while (0);
+
+#define CREATE_IF_EMPTY_DIMS(tensor, ...) \
+  do {                                    \
+    if (tensor.empty()) {                 \
+      tensor = Tensor(__VA_ARGS__);       \
+    }                                     \
+  } while (0);
 namespace nntrainer {
 
 /**
@@ -69,18 +90,23 @@ struct Tensor::BroadcastInfo {
    * @brief Construct a new External Loop Info object
    *
    */
-  BroadcastInfo() : buffer_size(0), buffer_axis(-1), strides{0, 0, 0, 0} {}
+  BroadcastInfo() :
+    buffer_size(0),
+    buffer_axis(-1),
+    strides{0, 0, 0, 0},
+    fm(Tformat::NCHW) {}
 
   unsigned int buffer_size; /**< virtual size of the buffer */
   int buffer_axis;          /**< the smallest axis that should be looped.
                                  -1 means no loop needed*/
   std::array<unsigned int, TensorDim::MAXDIM>
     strides; /**< modified strides for the loop */
+  Tformat fm;
 };
 
 Tensor::Tensor(const TensorDim &d, bool alloc_now, Tensor::Initializer init,
                std::string name_) :
-  Tensor(name_) {
+  Tensor(name_, d.getFormat()) {
   if (d.getDataLen() != 0) {
     dim = d;
     strides = d.computeStrides();
@@ -144,6 +170,7 @@ void Tensor::allocate() {
     /** as this memory is shared, do NOT initialize */
   } else {
     /// allocate new memory for the tensor data
+
     MemoryData *mem_data;
 
     if (getDataType() == ml::train::TensorDim::DataType::FP32) {
@@ -297,65 +324,137 @@ Tensor Tensor::multiply_strided(Tensor const &m, const float beta) const {
 Tensor &Tensor::multiply_strided(Tensor const &m, Tensor &output,
                                  const float beta) const {
   /** TODO: throw than create new dimenions */
-  CREATE_IF_EMPTY_DIMS(output, dim, nullptr);
+  CREATE_IF_EMPTY_DIMS(output, dim, nullptr, data_type);
 
   if (size() != m.size() || size() != output.size())
     throw std::invalid_argument(
       "Strided multiplication does not support broadcasting");
   if (dim.getDataType() == ml::train::TensorDim::DataType::FP32) {
-    if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
-        beta != 0.0) {
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
-          for (unsigned int h = 0; h < height(); ++h) {
-            for (unsigned int w = 0; w < width(); ++w) {
-              output.addValue(b, c, h, w,
-                              getValue<float>(b, c, h, w) *
-                                m.getValue<float>(b, c, h, w),
-                              beta);
+  NNTR_THROW_IF(getData() == nullptr, std::invalid_argument)
+    << getName() << " is not allocated";
+  NNTR_THROW_IF(m.getData() == nullptr, std::invalid_argument)
+    << m.getName() << " is not allocated";
+  NNTR_THROW_IF(output.getData() == nullptr, std::invalid_argument)
+    << output.getName() << " is not allocated";
+
+  // Format NCHW Case
+  if (this->getFormat() == Tformat::NCHW) {
+    if (getDataType() == DataType::FP32) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              for (unsigned int w = 0; w < width(); ++w) {
+                output.addValue(b, c, h, w,
+                                getValue<float>(b, c, h, w) *
+                                  m.getValue<float>(b, c, h, w),
+                                beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              float *out_data = output.getAddress<float>(b, c, h, 0);
+              const float *m_data = m.getAddress<float>(b, c, h, 0);
+              const float *in_data = getAddress<float>(b, c, h, 0);
+              std::transform(in_data, in_data + width(), m_data, out_data,
+                             std::multiplies<float>());
             }
           }
         }
       }
-    } else {
-      /** @todo optimize this with combining these loops where stride is 1 */
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
-          for (unsigned int h = 0; h < height(); ++h) {
-            float *out_data = output.getAddress(b, c, h, 0);
-            const float *m_data = m.getAddress(b, c, h, 0);
-            const float *in_data = getAddress(b, c, h, 0);
-            std::transform(in_data, in_data + width(), m_data, out_data,
-                           std::multiplies<float>());
+    } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              for (unsigned int w = 0; w < width(); ++w) {
+                output.addValue(b, c, h, w,
+                                getValue<__fp16>(b, c, h, w) *
+                                  m.getValue<__fp16>(b, c, h, w),
+                                beta);
+              }
+            }
+          }
+        }
+      } else {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              float *out_data = output.getAddress<float>(b, c, h, 0);
+              const float *m_data = m.getAddress<float>(b, c, h, 0);
+              const float *in_data = getAddress<float>(b, c, h, 0);
+              std::transform(in_data, in_data + width(), m_data, out_data,
+                             std::multiplies<__fp16>());
+            }
           }
         }
       }
     }
-  } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
-    if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
-        beta != 0.0) {
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
+  } else { // Format NHWC Case
+    if (getDataType() == DataType::FP32) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
           for (unsigned int h = 0; h < height(); ++h) {
             for (unsigned int w = 0; w < width(); ++w) {
-              output.addValue(b, c, h, w,
-                              getValue<__fp16>(b, c, h, w) *
-                                m.getValue<__fp16>(b, c, h, w),
-                              beta);
+              for (unsigned int c = 0; c < channel(); ++c) {
+                output.addValue(b, c, h, w,
+                                getValue<float>(b, c, h, w) *
+                                  m.getValue<float>(b, c, h, w),
+                                beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where
+         * stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int h = 0; h < height(); ++h) {
+            for (unsigned int w = 0; w < width(); ++w) {
+              float *out_data = output.getAddress<float>(b, c, h, 0);
+              const float *m_data = m.getAddress<float>(b, c, h, 0);
+              const float *in_data = getAddress<float>(b, c, h, 0);
+              std::transform(in_data, in_data + channel(), m_data, out_data,
+                             std::multiplies<float>());
             }
           }
         }
       }
-    } else {
-      /** @todo optimize this with combining these loops where stride is 1 */
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
+    } else if (getDataType() == ml::train::TensorDim::DataType::FP16) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
           for (unsigned int h = 0; h < height(); ++h) {
-            __fp16 *out_data = output.getAddress<__fp16>(b, c, h, 0);
-            const __fp16 *m_data = m.getAddress<__fp16>(b, c, h, 0);
-            const __fp16 *in_data = getAddress<__fp16>(b, c, h, 0);
-            std::transform(in_data, in_data + width(), m_data, out_data,
-                           std::multiplies<__fp16>());
+            for (unsigned int w = 0; w < width(); ++w) {
+              for (unsigned int c = 0; c < channel(); ++c) {
+                output.addValue(b, c, h, w,
+                                getValue<__fp16>(b, c, h, w) *
+                                  m.getValue<__fp16>(b, c, h, w),
+                                beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where
+         * stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int h = 0; h < height(); ++h) {
+            for (unsigned int w = 0; w < width(); ++w) {
+              __fp16 *out_data = output.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *m_data = m.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *in_data = getAddress<__fp16>(b, c, h, 0);
+              std::transform(in_data, in_data + channel(), m_data, out_data,
+                             std::multiplies<__fp16>());
+            }
           }
         }
       }
@@ -389,58 +488,121 @@ Tensor &Tensor::add_strided(Tensor const &m, Tensor &output,
   if (size() != m.size() || size() != output.size())
     throw std::invalid_argument(
       "Strided addition does not support broadcasting");
-  if (dim.getDataType() == ml::train::TensorDim::DataType::FP32) {
-    if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
-        beta != 0.0) {
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
-          for (unsigned int h = 0; h < height(); ++h) {
-            for (unsigned int w = 0; w < width(); ++w) {
-              output.setValue(b, c, h, w,
-                              getValue<float>(b, c, h, w) +
-                                m.getValue<float>(b, c, h, w) * beta);
+  // Format NCHW Case
+  if (this->getFormat() == Tformat::NCHW) {
+    if (getDataType() == DataType::FP32) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              for (unsigned int w = 0; w < width(); ++w) {
+                output.setValue(b, c, h, w,
+                                getValue<float>(b, c, h, w) +
+                                  m.getValue<float>(b, c, h, w) * beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              float *out_data = output.getAddress<float>(b, c, h, 0);
+              const float *m_data = m.getAddress<float>(b, c, h, 0);
+              const float *in_data = getAddress<float>(b, c, h, 0);
+              std::transform(in_data, in_data + width(), m_data, out_data,
+                             std::plus<float>());
             }
           }
         }
       }
-    } else {
-      /** @todo optimize this with combining these loops where stride is 1 */
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
-          for (unsigned int h = 0; h < height(); ++h) {
-            float *out_data = output.getAddress<float>(b, c, h, 0);
-            const float *m_data = m.getAddress<float>(b, c, h, 0);
-            const float *in_data = getAddress<float>(b, c, h, 0);
-            std::transform(in_data, in_data + width(), m_data, out_data,
-                           std::plus<float>());
+    } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              for (unsigned int w = 0; w < width(); ++w) {
+                output.setValue(b, c, h, w,
+                                getValue<__fp16>(b, c, h, w) +
+                                  m.getValue<__fp16>(b, c, h, w) * beta);
+              }
+            }
+          }
+        }
+      } else {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              __fp16 *out_data = output.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *m_data = m.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *in_data = getAddress<__fp16>(b, c, h, 0);
+              std::transform(in_data, in_data + width(), m_data, out_data,
+                             std::plus<__fp16>());
+            }
           }
         }
       }
     }
-  } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
-    if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
-        beta != 0.0) {
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
+  } else { // Format NHWC Case
+    if (getDataType() == DataType::FP32) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
           for (unsigned int h = 0; h < height(); ++h) {
             for (unsigned int w = 0; w < width(); ++w) {
-              output.setValue(b, c, h, w,
-                              getValue<__fp16>(b, c, h, w) +
-                                m.getValue<__fp16>(b, c, h, w) * beta);
+              for (unsigned int c = 0; c < channel(); ++c) {
+                output.setValue(b, c, h, w,
+                                getValue<float>(b, c, h, w) +
+                                  m.getValue<float>(b, c, h, w) * beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where
+         * stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int h = 0; h < height(); ++h) {
+            for (unsigned int w = 0; w < width(); ++w) {
+              float *out_data = output.getAddress<float>(b, c, h, 0);
+              const float *m_data = m.getAddress<float>(b, c, h, 0);
+              const flaot *in_data = getAddress<float>(b, c, h, 0);
+              std::transform(in_data, in_data + channel(), m_data, out_data,
+                             std::plus<float>());
             }
           }
         }
       }
-    } else {
-      /** @todo optimize this with combining these loops where stride is 1 */
-      for (unsigned int b = 0; b < batch(); ++b) {
-        for (unsigned int c = 0; c < channel(); ++c) {
+    } else if (getDataType() == ml::train::TensorDim::DataType::FP16) {
+      if (strides[3] != 1 || m.strides[3] != 1 || output.strides[3] != 1 ||
+          beta != 0.0) {
+        for (unsigned int b = 0; b < batch(); ++b) {
           for (unsigned int h = 0; h < height(); ++h) {
-            __fp16 *out_data = output.getAddress<__fp16>(b, c, h, 0);
-            const __fp16 *m_data = m.getAddress<__fp16>(b, c, h, 0);
-            const __fp16 *in_data = getAddress<__fp16>(b, c, h, 0);
-            std::transform(in_data, in_data + width(), m_data, out_data,
-                           std::plus<__fp16>());
+            for (unsigned int w = 0; w < width(); ++w) {
+              for (unsigned int c = 0; c < channel(); ++c) {
+                output.setValue(b, c, h, w,
+                                getValue<__fp16>(b, c, h, w) *
+                                  m.getValue<__fp16>(b, c, h, w),
+                                beta);
+              }
+            }
+          }
+        }
+      } else {
+        /** @todo optimize this with combining these loops where
+         * stride is 1 */
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int h = 0; h < height(); ++h) {
+            for (unsigned int w = 0; w < width(); ++w) {
+              __fp16 *out_data = output.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *m_data = m.getAddress<__fp16>(b, c, h, 0);
+              const __fp16 *in_data = getAddress<__fp16>(b, c, h, 0);
+              std::transform(in_data, in_data + channel(), m_data, out_data,
+                             std::plus<__fp16>());
+            }
           }
         }
       }
@@ -497,7 +659,7 @@ int Tensor::multiply_i(Tensor const &m, const float beta) {
 }
 
 Tensor Tensor::multiply(Tensor const &m, const float beta) const {
-  Tensor t;
+  Tensor t("", this->getFormat());
   return this->multiply(m, t, beta);
 }
 
@@ -524,12 +686,22 @@ Tensor &Tensor::multiply(Tensor const &m, Tensor &output,
       }
     };
 
+    NNTR_THROW_IF(m.getFormat() != this->getFormat(), std::invalid_argument)
+      << "Tensor Format of " << getName() << ":"
+      << ((bool)(this->getFormat()) ? "NHWC" : "NCHW") << " is not match. ("
+      << ((bool)(m.getFormat()) ? "NHWC" : "NCHW") << ")";
+
+    NNTR_THROW_IF(!contiguous || !m.contiguous || !output.contiguous,
+                  std::invalid_argument)
+      << getName() << " is not contiguous, cannot multiply";
+
     NNTR_THROW_IF(!contiguous || !m.contiguous || !output.contiguous,
                   std::invalid_argument)
       << getName() << " is not contiguous, cannot multiply";
 
     apply_broadcast(m, f, output);
     return output;
+    
   } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
     auto f = [&](const BroadcastInfo &e, const __fp16 *buf, const __fp16 *m_buf,
                  __fp16 *out_buf) {
@@ -546,6 +718,11 @@ Tensor &Tensor::multiply(Tensor const &m, Tensor &output,
         }
       }
     };
+
+    NNTR_THROW_IF(m.getFormat() != this->getFormat(), std::invalid_argument)
+      << "Tensor Format of " << getName() << ":"
+      << ((bool)(this->getFormat()) ? "NHWC" : "NCHW") << " is not match. ("
+      << ((bool)(m.getFormat()) ? "NHWC" : "NCHW") << ")";
 
     NNTR_THROW_IF(!contiguous || !m.contiguous || !output.contiguous,
                   std::invalid_argument)
@@ -728,21 +905,6 @@ Tensor &Tensor::pow(float exponent, Tensor &out) const {
   return apply(f, out);
 }
 
-int Tensor::erf_i() {
-  erf(*this);
-  return ML_ERROR_NONE;
-}
-
-Tensor Tensor::erf() const {
-  Tensor t;
-  return erf(t);
-}
-
-Tensor &Tensor::erf(Tensor &out) const {
-  auto f = [](float in) { return std::erf(in); };
-  return apply(f, out);
-}
-
 Tensor Tensor::getBatchSlice(size_t offset, unsigned int size) const {
   TensorDim dim_ = dim;
   dim_.batch(size);
@@ -779,6 +941,9 @@ Tensor Tensor::getSharedDataTensor(const TensorDim dim_, size_t offset,
                                    bool reset_stride,
                                    const std::string &name_) const {
   Tensor ret = *this;
+  if (dim_.getFormat() != ret.dim.getFormat())
+    throw std::invalid_argument("Tensor format does not match");
+
   ret.dim = dim_;
   if (!name_.empty())
     ret.name = name_;
@@ -858,14 +1023,18 @@ std::vector<Tensor> Tensor::split(std::vector<size_t> sizes, int axis) {
     ret_dims[i].setTensorDim(axis, sizes[i]);
   }
 
-  auto iter_value = [this](std::array<size_t, 4> &loc,
-                           std::array<size_t, 4> &end_loc,
-                           TensorDim &reset_dim) -> float & {
-    auto &value = getValue(loc[0], loc[1], loc[2], loc[3]);
+  bool is_format_nchw = (dim.getFormat() == Tformat::NCHW) ? true : false;
+
+  auto iter_value = [this, is_format_nchw](
+                      std::array<size_t, 4> &loc,
+                      const std::array<size_t, 4> &end_loc,
+                      const std::array<size_t, 4> &reset_dim_arr) -> float & {
+    auto &value = (is_format_nchw) ? getValue(loc[0], loc[1], loc[2], loc[3])
+                                   : getValue(loc[0], loc[3], loc[1], loc[2]);
     for (int i = 3; i >= 0; --i) {
       loc[i]++;
       if (loc[i] == end_loc[i]) {
-        loc[i] -= reset_dim.getTensorDim(i);
+        loc[i] -= reset_dim_arr[i];
         continue;
       }
       break;
@@ -879,19 +1048,57 @@ std::vector<Tensor> Tensor::split(std::vector<size_t> sizes, int axis) {
   unsigned int accumulated_size = 0;
   for (unsigned int i = 0; i < num_size; ++i) {
     std::array<size_t, 4> loc = {0, 0, 0, 0};
-    loc[axis] += accumulated_size;
+
+    if (is_format_nchw) {
+      loc[axis] += accumulated_size;
+    } else {
+      if (axis == 0) {
+        loc[0] += accumulated_size;
+      } else if (axis == 1) {
+        loc[3] += accumulated_size;
+      } else if (axis == 2 || axis == 3) {
+        loc[axis - 1] += accumulated_size;
+      }
+    }
+
     ret.emplace_back(ret_dims[i]);
     auto &ret_t = ret.back();
 
-    std::array<size_t, 4> end_loc = {ret_dims[i].batch(), ret_dims[i].channel(),
-                                     ret_dims[i].height(), ret_dims[i].width()};
+    std::array<size_t, 4> end_loc;
+
+    if (is_format_nchw) {
+      end_loc = {ret_dims[i].batch(), ret_dims[i].channel(),
+                 ret_dims[i].height(), ret_dims[i].width()};
+    } else {
+      end_loc = {ret_dims[i].batch(), ret_dims[i].height(), ret_dims[i].width(),
+                 ret_dims[i].channel()};
+    }
+
     accumulated_size += sizes[i];
-    end_loc[axis] = accumulated_size;
 
-    auto reset_dim = ret_dims[i];
+    if (is_format_nchw) {
+      end_loc[axis] = accumulated_size;
+    } else {
+      if (axis == 0) {
+        end_loc[0] = accumulated_size;
+      } else if (axis == 1) {
+        end_loc[3] = accumulated_size;
+      } else if (axis == 2 || axis == 3) {
+        end_loc[axis - 1] = accumulated_size;
+      }
+    }
 
-    ret_t.apply_i([&iter_value, &loc, &end_loc, &reset_dim](float _) {
-      return iter_value(loc, end_loc, reset_dim);
+    std::array<size_t, 4> reset_dim_arr;
+    if (is_format_nchw) {
+      reset_dim_arr = {ret_dims[i].batch(), ret_dims[i].channel(),
+                       ret_dims[i].height(), ret_dims[i].width()};
+    } else {
+      reset_dim_arr = {ret_dims[i].batch(), ret_dims[i].height(),
+                       ret_dims[i].width(), ret_dims[i].channel()};
+    }
+
+    ret_t.apply_i([&iter_value, &loc, &end_loc, &reset_dim_arr](float _) {
+      return iter_value(loc, end_loc, reset_dim_arr);
     });
   }
 
@@ -911,6 +1118,7 @@ Tensor Tensor::cat(const std::vector<Tensor> &tensors, int axis) {
     << "given tensor vector is empty";
 
   auto ref_dim = tensors.front().getDim();
+  bool is_format_nchw = (ref_dim.getFormat() == Tformat::NCHW) ? true : false;
   ref_dim.setTensorDim(axis, 1);
   NNTR_THROW_IF(!std::all_of(tensors.begin(), tensors.end(),
                              [&ref_dim, axis](const Tensor &t) {
@@ -926,13 +1134,18 @@ Tensor Tensor::cat(const std::vector<Tensor> &tensors, int axis) {
                                   [axis](unsigned cur, const Tensor &t) {
                                     return cur += t.getDim().getTensorDim(axis);
                                   });
-  auto iter_value = [](std::array<unsigned, 4> &loc,
-                       std::array<unsigned, 4> &start_loc, Tensor &t,
-                       const TensorDim &ref_dim) -> float & {
-    auto &value = t.getValue<float>(loc[0], loc[1], loc[2], loc[3]);
+  auto iter_value =
+    [is_format_nchw](std::array<unsigned, 4> &loc,
+                     const std::array<unsigned, 4> &start_loc, Tensor &t,
+                     const std::array<unsigned, 4> &ref_dim_arr) -> float & {
+      
+    auto &value = is_format_nchw
+                    ? t.getValue<float>(loc[0], loc[1], loc[2], loc[3])
+                    : t.getValue<float>(loc[0], loc[3], loc[1], loc[2]);
+    
     for (int i = 3; i >= 0; --i) {
       loc[i]++;
-      if (loc[i] - start_loc[i] == ref_dim.getTensorDim(i)) {
+      if (loc[i] - start_loc[i] == ref_dim_arr[i]) {
         loc[i] = start_loc[i];
         continue;
       }
@@ -949,10 +1162,34 @@ Tensor Tensor::cat(const std::vector<Tensor> &tensors, int axis) {
   std::array<unsigned, 4> loc = {0, 0, 0, 0};
   for (auto &t : tensors) {
     std::array<unsigned, 4> start_loc = loc;
-    for (size_t i = 0u, sz = t.size(); i < sz; ++i) {
-      iter_value(loc, start_loc, ret, t.getDim()) = t.getValue<float>(i);
+    std::array<unsigned, 4> tensor_dim_arr;
+    if (is_format_nchw) {
+      tensor_dim_arr[0] = t.getDim().getTensorDim(0);
+      tensor_dim_arr[1] = t.getDim().getTensorDim(1);
+      tensor_dim_arr[2] = t.getDim().getTensorDim(2);
+      tensor_dim_arr[3] = t.getDim().getTensorDim(3);
+    } else {
+      tensor_dim_arr[0] = t.getDim().getTensorDim(0);
+      tensor_dim_arr[1] = t.getDim().getTensorDim(2);
+      tensor_dim_arr[2] = t.getDim().getTensorDim(3);
+      tensor_dim_arr[3] = t.getDim().getTensorDim(1);
     }
-    loc[axis] += t.getDim().getTensorDim(axis);
+
+    for (size_t i = 0u, sz = t.size(); i < sz; ++i) {
+      iter_value(loc, start_loc, ret, tensor_dim_arr) = t.getValue<float>(i);
+    }
+
+    if (is_format_nchw) {
+      loc[axis] += t.getDim().getTensorDim(axis);
+    } else {
+      if (axis == 0) {
+        loc[0] += t.getDim().getTensorDim(axis);
+      } else if (axis == 1) {
+        loc[3] += t.getDim().getTensorDim(axis);
+      } else if (axis == 2 || axis == 3) {
+        loc[axis - 1] += t.getDim().getTensorDim(axis);
+      }
+    }
   }
 
   return ret;
@@ -996,6 +1233,7 @@ void Tensor::apply_broadcast(
     BroadcastInfo e;
     e.buffer_size = size();
     e.strides[3] = 1;
+    e.fm = getFormat();
     v_func(e, getData(), m.getData(), output.getData());
     return;
   }
@@ -1050,7 +1288,13 @@ void Tensor::apply_broadcast_util(
   }
 
   cur_axis++;
-  for (unsigned int i = 0; i < dim.getTensorDim(cur_axis); ++i) {
+  uint continuity[4] = {0, 1, 2, 3};
+  if (getFormat() == Tformat::NHWC) {
+    continuity[1] = 2;
+    continuity[2] = 3;
+    continuity[3] = 1;
+  }
+  for (unsigned int i = 0; i < dim.getTensorDim(continuity[cur_axis]); ++i) {
     size_t next_offset = offset + i * strides[cur_axis];
     size_t next_m_offset = m_offset + i * e.strides[cur_axis];
     apply_broadcast_util(m, v_func, output, e, cur_axis, next_offset,
@@ -1092,14 +1336,14 @@ Tensor Tensor::sum_by_batch() const {
   NNTR_THROW_IF(!contiguous, std::invalid_argument)
     << getName() << " is not contiguous, cannot sum";
 
-  Tensor ret(dim.batch(), 1, 1, 1);
+  Tensor ret(dim.batch(), 1, 1, 1, this->getFormat());
   size_t feat_len = dim.getFeatureLen();
   size_t batch = dim.batch();
 
   const float *data = getData();
   float *rdata = ret.getData();
 
-  Tensor ones(1, 1, 1, feat_len);
+  Tensor ones(1, 1, 1, feat_len, this->getFormat());
   ones.setValue(1.0);
   sgemv(CblasRowMajor, CblasNoTrans, batch, feat_len, 1, data, feat_len,
         ones.getData(), 1, 0.0, rdata, 1);
@@ -1111,7 +1355,7 @@ Tensor Tensor::sum_by_batch() const {
  * @brief Calculate sum according to the axis.
  */
 Tensor Tensor::sum(unsigned int axis, float alpha) const {
-  Tensor ret;
+  Tensor ret("", this->getFormat());
   return sum(axis, ret, alpha, 0);
 }
 Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
@@ -1136,52 +1380,87 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
                          getTensorType());
     size_t feat_len = dim.getFeatureLen();
     size_t batch = dim.batch();
-    Tensor ones(1, 1, 1, batch);
+    Tensor ones(1, 1, 1, batch, this->getFormat());
     ones.setValue(alpha);
     sgemv(CblasRowMajor, CblasTrans, batch, feat_len, 1, data, feat_len,
           ones.getData(), 1, beta, ret.getData(), 1);
   } break;
   case 1: {
-    CREATE_IF_EMPTY_DIMS(ret, dim.batch(), 1, dim.height(), dim.width(),
-                         getTensorType());
-    unsigned int feat_len = dim.height() * dim.width();
-    unsigned int channel = dim.channel();
-    Tensor ones(1, 1, 1, channel);
-    ones.setValue(alpha);
-    float *rdata = ret.getData<float>();
-    for (unsigned int k = 0; k < dim.batch(); ++k) {
-      sgemv(CblasRowMajor, CblasTrans, channel, feat_len, 1,
-            &data[k * dim.getFeatureLen()], feat_len, ones.getData(), 1, beta,
-            &rdata[k * feat_len], 1);
+    CREATE_IF_EMPTY_DIMS(ret, dim[0], 1, dim[2], dim[3], getTensorType());
+    if (this->getFormat() == Tformat::NHWC) {
+      unsigned int m = ret.dim.getDataLen();
+      unsigned int n = dim[1];
+      Tensor ones(1, 1, 1, n, this->getTensorType());
+      ones.setValue(alpha);
+      sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n,
+            ones.getData<float>(), 1, beta, ret.getData<float>(), 1);
+    } else {
+      unsigned int feat_len = dim[2] * dim[3];
+      unsigned int t_axis = dim[1];
+      Tensor ones(1, 1, 1, t_axis, getTensorType());
+      ones.setValue(alpha);
+      float *rdata = ret.getData<float>();
+      for (unsigned int k = 0; k < dim[0]; ++k) {
+        sgemv(CblasRowMajor, CblasTrans, t_axis, feat_len, 1,
+              &data[k * dim.getFeatureLen()], feat_len, ones.getData<float>(), 1, beta,
+              &rdata[k * feat_len], 1);
+      }
     }
   } break;
   case 2: {
-    CREATE_IF_EMPTY_DIMS(ret, dim.batch(), dim.channel(), 1, dim.width(),
-                         getTensorType());
-    unsigned int width = dim.width();
-    unsigned int height = dim.height();
-    Tensor ones(1, 1, 1, height);
-    ones.setValue(alpha);
-    float *rdata = ret.getData<float>();
-    for (unsigned int k = 0; k < dim.batch(); ++k) {
-      for (unsigned int c = 0; c < dim.channel(); ++c) {
-        unsigned int idx =
-          k * dim.getFeatureLen() + c * dim.width() * dim.height();
-        unsigned int ridx = k * ret.dim.getFeatureLen() + c * dim.width();
-        sgemv(CblasRowMajor, CblasTrans, height, width, 1, &data[idx], width,
-              ones.getData(), 1, beta, &rdata[ridx], 1);
+    CREATE_IF_EMPTY_DIMS(ret, dim[0], dim[1], 1, dim[3], getTensorType());
+
+    if (this->getFormat() == Tformat::NHWC) {
+      unsigned int feat_len = dim[1] * dim[3];
+      unsigned int t_axis = dim[2];
+      Tensor ones(1, 1, 1, t_axis, this->getTensorType());
+      ones.setValue(alpha);
+      float *rdata = ret.getData<float>();
+      for (unsigned int k = 0; k < dim[0]; ++k) {
+        sgemv(CblasRowMajor, CblasTrans, t_axis, feat_len, 1,
+              &data[k * dim.getFeatureLen()], feat_len, ones.getData<float>(),
+              1, beta, &rdata[k * feat_len], 1);
+      }
+    } else {
+      unsigned int t_3 = dim[3];
+      unsigned int t_axis = dim[2];
+      Tensor ones(1, 1, 1, t_axis, this->getTensorType());
+      ones.setValue(alpha);
+      float *rdata = ret.getData<float>();
+      for (unsigned int k = 0; k < dim[0]; ++k) {
+        for (unsigned int c = 0; c < dim[1]; ++c) {
+          unsigned int idx = k * dim.getFeatureLen() + c * dim[3] * dim[2];
+          unsigned int ridx = k * ret.dim.getFeatureLen() + c * dim[3];
+          sgemv(CblasRowMajor, CblasTrans, t_axis, t_3, 1, &data[idx], t_3,
+                ones.getData<float>(), 1, beta, &rdata[ridx], 1);
+        }
       }
     }
   } break;
   case 3: {
-    CREATE_IF_EMPTY_DIMS(ret, dim.batch(), dim.channel(), dim.height(), 1,
-                         getTensorType());
-    unsigned int m = ret.dim.getDataLen();
-    unsigned int n = dim.width();
-    Tensor ones(1, 1, 1, n);
-    ones.setValue(alpha);
-    sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n, ones.getData<float>(),
-          1, beta, ret.getData<float>(), 1);
+    CREATE_IF_EMPTY_DIMS(ret, dim[0], dim[1], dim[2], 1, this->getTensorType());
+    if (this->getFormat() == Tformat::NHWC) {
+      unsigned int t_3 = dim[1];
+      unsigned int t_axis = dim[3];
+      Tensor ones(1, 1, 1, t_axis, this->getTensorType());
+      ones.setValue(alpha);
+      float *rdata = ret.getData<float>();
+      for (unsigned int k = 0; k < dim[0]; ++k) {
+        for (unsigned int c = 0; c < dim[2]; ++c) {
+          unsigned int idx = k * dim.getFeatureLen() + c * dim[3] * dim[1];
+          unsigned int ridx = k * ret.dim.getFeatureLen() + c * dim[1];
+          sgemv(CblasRowMajor, CblasTrans, t_axis, t_3, 1, &data[idx], t_3,
+                ones.getData<float>(), 1, beta, &rdata[ridx], 1);
+        }
+      }
+    } else {
+      unsigned int m = ret.dim.getDataLen();
+      unsigned int n = dim[3];
+      Tensor ones(1, 1, 1, n);
+      ones.setValue(alpha);
+      sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n, ones.getData(), 1,
+            beta, ret.getData(), 1);
+    }
   } break;
   default:
     throw std::out_of_range("Error: Dimension cannot exceed 3");
@@ -1190,16 +1469,18 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
 }
 
 Tensor Tensor::sum(const std::vector<unsigned int> &axes, float alpha) const {
-  Tensor ret;
+  Tensor ret("", this->getFormat());
   return sum(axes, ret, alpha);
 }
 
 void Tensor::mergeAxis(unsigned int axis1, unsigned int axis2) {
+  std::vector<unsigned int> continuous_order = {0, 3, 1, 2};
   NNTR_THROW_IF(!contiguous, std::invalid_argument)
     << getName() << " is not contiguous, cannot merge axis";
 
   if (axis2 != axis1 + 1)
-    throw std::invalid_argument("axis2 must be axis1 + 1 for merging.");
+    if (!checkContinuous(axis1, axis2))
+      throw std::invalid_argument("axis2 must be axis1 + 1 for merging.");
 
   dim.setTensorDim(axis2, dim.getTensorDim(axis1) * dim.getTensorDim(axis2));
   dim.setTensorDim(axis1, 1);
@@ -1215,9 +1496,11 @@ Tensor &Tensor::sum(const std::vector<unsigned int> &axes, Tensor &output,
   } else {
     /** club axes together */
     Tensor new_reshaped = *this;
+    std::vector<unsigned int> continuous_order = {0, 3, 1, 2};
     std::vector<unsigned int> new_axes = {axes[0]};
+
     for (unsigned int i = 1; i < axes.size(); ++i) {
-      if (axes[i] == axes[i - 1] + 1) {
+      if (checkContinuous(axes[i - 1], axes[i])) {
         new_reshaped.mergeAxis(axes[i - 1], axes[i]);
         new_axes.back() = axes[i];
       } else {
@@ -1252,7 +1535,7 @@ Tensor &Tensor::dotBatched(Tensor const &m, Tensor &result, bool trans,
 }
 
 Tensor Tensor::dot(Tensor const &m, bool trans, bool trans_m) const {
-  Tensor output;
+  Tensor output("", this->getFormat());
   dot(m, output, trans, trans_m);
 
   return output;
@@ -1344,11 +1627,18 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
   if (trans && dim.rank() > 2) {
     ml_logw("Warning: support only for rank of dot matrix <= 2 with trans");
   }
-
-  unsigned int dim1 = batch() * channel() * height();
-  unsigned int dim2 = width();
-  unsigned int mdim1 = m.batch() * m.channel() * m.height();
-  unsigned int mdim2 = m.width();
+  unsigned int dim1, dim2, mdim1, mdim2;
+  if (getFormat() == Tformat::NHWC) {
+    dim1 = batch() * height() * width();
+    dim2 = channel();
+    mdim1 = m.batch() * m.height() * m.width();
+    mdim2 = m.channel();
+  } else {
+    dim1 = batch() * channel() * height();
+    dim2 = width();
+    mdim1 = m.batch() * m.channel() * m.height();
+    mdim2 = m.width();
+  }
 
   unsigned int M, N, K, lda, ldb, ldc;
 
@@ -1359,8 +1649,13 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
     K = mdim1; /** == dim2 */
     N = mdim2;
     M = dim1;
-    CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
-                         getTensorType());
+    if (getFormat() == Tformat::NHWC) {
+      CREATE_IF_EMPTY_DIMS(result, batch(), N, height(), width(),
+                           getTensorType()); //  NHWC Result Tensor
+    } else {
+      CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
+                           getTensorType());
+    }
 
     // We are not set zero the result because of performnace reason.
     // However, result is not initialized properly. There might include
@@ -1374,8 +1669,17 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
     K = mdim2; /** == dim2 */
     N = mdim1;
     M = dim1;
-    CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
-                         getTensorType());
+    if (getFormat() == Tformat::NHWC) {
+      CREATE_IF_EMPTY_DIMS(result, batch(), N, height(), width(),
+                           getTensorType());
+    } else {
+      CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
+                           getTensorType());
+      CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
+                           getTensorType());
+      CREATE_IF_EMPTY_DIMS(result, batch(), channel(), height(), N,
+                           getTensorType());
+    }
   } else if (trans && !trans_m) {
     if (dim1 != mdim1)
       throw std::runtime_error(
@@ -1383,7 +1687,11 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
     K = mdim1; /** == dim1 */
     N = mdim2;
     M = dim2;
-    CREATE_IF_EMPTY_DIMS(result, 1, 1, M, N, getTensorType());
+    if (getFormat() == Tformat::NHWC) {
+      CREATE_IF_EMPTY_DIMS(result, 1, N, M, 1, getTensorType());
+    } else {
+      CREATE_IF_EMPTY_DIMS(result, 1, 1, M, N, getTensorType());
+    }
   } else {
     if (dim1 != mdim2)
       throw std::runtime_error(
@@ -1391,11 +1699,15 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
     K = mdim2; /** == dim1 */
     N = mdim1;
     M = dim2;
-    CREATE_IF_EMPTY_DIMS(result, 1, 1, M, N, getTensorType());
+    if (getFormat() == Tformat::NHWC) {
+      CREATE_IF_EMPTY_DIMS(result, 1, N, M, 1,  getTensorType());
+    } else {
+      CREATE_IF_EMPTY_DIMS(result, 1, 1, M, N, getTensorType());
+    }
   }
   lda = dim2;
   ldb = mdim2;
-  ldc = result.width();
+  ldc = (getFormat() == Tformat::NHWC) ? result.channel() : result.width();
 
   const float *data = getData();
   const float *mdata = m.getData();
@@ -1456,29 +1768,55 @@ Tensor &Tensor::transpose(const std::string &direction, Tensor &out) const {
 
   SL = dim.batch(), SI = dim.channel(), SJ = dim.height(), SK = dim.width();
 
+  bool is_format_nchw = (getFormat() == Tformat::NCHW) ? true : false;
+
   inptr = getData();
   outptr = out.getData();
 
   switch (indexI) {
   case 0:
     if (indexJ == 1) {
-      transposeloop(l, i, j, k, SL, SI, SJ, SK);
+      if (is_format_nchw) {
+        transposeloop(l, i, j, k, SL, SI, SJ, SK);
+      } else {
+        transposeloop_nhwc(l, j, k, i, SL, SJ, SK, SI);
+      }
     } else {
-      transposeloop(l, i, k, j, SL, SI, SK, SJ);
+      if (is_format_nchw) {
+        transposeloop(l, i, k, j, SL, SI, SK, SJ);
+      } else {
+        transposeloop_nhwc(l, k, j, i, SL, SK, SJ, SI);
+      }
     }
     break;
   case 1:
     if (indexJ == 0) {
-      transposeloop(l, j, i, k, SL, SJ, SI, SK);
+      if (is_format_nchw) {
+        transposeloop(l, j, i, k, SL, SJ, SI, SK);
+      } else {
+        transposeloop_nhwc(l, i, k, j, SL, SI, SK, SJ);
+      }
     } else {
-      transposeloop(l, j, k, i, SL, SJ, SK, SI);
+      if (is_format_nchw) {
+        transposeloop(l, j, k, i, SL, SJ, SK, SI);
+      } else {
+        transposeloop_nhwc(l, k, i, j, SL, SK, SI, SJ);
+      }
     }
     break;
   case 2:
     if (indexJ == 0) {
-      transposeloop(l, k, i, j, SL, SK, SI, SJ);
+      if (is_format_nchw) {
+        transposeloop(l, k, i, j, SL, SK, SI, SJ);
+      } else {
+        transposeloop_nhwc(l, i, j, k, SL, SI, SJ, SK);
+      }
     } else {
-      transposeloop(l, k, j, i, SL, SK, SJ, SI);
+      if (is_format_nchw) {
+        transposeloop(l, k, j, i, SL, SK, SJ, SI);
+      } else {
+        transposeloop_nhwc(l, j, i, k, SL, SJ, SI, SK);
+      }
     }
     break;
   }
@@ -1617,7 +1955,7 @@ Tensor &Tensor::apply(std::function<Tensor &(Tensor, Tensor &)> f,
 void Tensor::print(std::ostream &out) const {
   printInstance(out, this);
   if (getDataType() == ml::train::TensorDim::DataType::FP32) {
-    const __fp16 *data = getData<__fp16>();
+    const float *data = getData<float>();
     unsigned int len = size();
     out << "data addr: " << data << '\n';
     out << dim;
@@ -1631,20 +1969,36 @@ void Tensor::print(std::ostream &out) const {
 
     std::ios init(NULL);
     init.copyfmt(out);
-    for (unsigned int k = 0; k < dim.batch(); k++) {
-      for (unsigned int l = 0; l < dim.channel(); l++) {
-        for (unsigned int i = 0; i < dim.height(); i++) {
-          for (unsigned int j = 0; j < dim.width(); j++) {
-            out << std::setw(10) << std::setprecision(10)
-                << this->getValue<float>(k, l, i, j) << " ";
+    if (getFormat() == Tformat::NCHW) {
+      for (unsigned int k = 0; k < batch(); k++) {
+        for (unsigned int l = 0; l < channel(); l++) {
+          for (unsigned int i = 0; i < height(); i++) {
+            for (unsigned int j = 0; j < width(); j++) {
+              out << std::setw(10) << std::setprecision(10)
+                  << this->getValue<float>(k, l, i, j) << " ";
+            }
+            out << std::endl;
           }
           out << std::endl;
         }
-        out << std::endl;
+        out << "-------" << std::endl;
       }
-      out << "-------" << std::endl;
+    } else {
+      for (unsigned int k = 0; k < batch(); k++) {
+        for (unsigned int i = 0; i < height(); i++) {
+          for (unsigned int j = 0; j < width(); j++) {
+            for (unsigned int l = 0; l < channel(); l++) {
+              out << std::setw(10) << std::setprecision(10)
+                  << this->getValue<float>(k, l, i, j) << " ";
+            }
+            out << std::endl;
+          }
+          out << std::endl;
+        }
+        out << "-------" << std::endl;
+      }
+      out.copyfmt(init);
     }
-    out.copyfmt(init);
   } else if (getDataType() == ml::train::TensorDim::DataType::FP16) {
     const __fp16 *data = getData<__fp16>();
     unsigned int len = size();
@@ -1660,20 +2014,123 @@ void Tensor::print(std::ostream &out) const {
 
     std::ios init(NULL);
     init.copyfmt(out);
-    for (unsigned int k = 0; k < dim.batch(); k++) {
-      for (unsigned int l = 0; l < dim.channel(); l++) {
-        for (unsigned int i = 0; i < dim.height(); i++) {
-          for (unsigned int j = 0; j < dim.width(); j++) {
-            out << std::setw(10) << std::setprecision(10)
-                << this->getValue<__fp16>(k, l, i, j) << " ";
+    if (getFormat() == Tformat::NCHW) {
+      for (unsigned int k = 0; k < batch(); k++) {
+        for (unsigned int l = 0; l < channel(); l++) {
+          for (unsigned int i = 0; i < height(); i++) {
+            for (unsigned int j = 0; j < width(); j++) {
+              out << std::setw(10) << std::setprecision(10)
+                  << this->getValue<__fp16>(k, l, i, j) << " ";
+            }
+            out << std::endl;
           }
           out << std::endl;
         }
+        out << "-------" << std::endl;
+      }
+    } else {
+      for (unsigned int k = 0; k < batch(); k++) {
+        for (unsigned int i = 0; i < height(); i++) {
+          for (unsigned int j = 0; j < width(); j++) {
+            for (unsigned int l = 0; l < channel(); l++) {
+              out << std::setw(10) << std::setprecision(10)
+                  << this->getValue<__fp16>(k, l, i, j) << " ";
+            }
+            out << std::endl;
+          }
+          out << std::endl;
+        }
+        out << "-------" << std::endl;
+      }
+      out.copyfmt(init);
+    }    
+  }
+}
+
+void Tensor::print_(std::ostream &out, uint opt) const {
+  printInstance(out, this);
+  const float *data = getData();
+
+  unsigned int len = size();
+
+  std::ios init(NULL);
+  init.copyfmt(out);
+  if (opt == 0) {
+    if (getFormat() == Tformat::NCHW) {
+      out << "{";
+      for (unsigned int k = 0; k < batch(); k++) {
+        out << "{";
+        for (unsigned int i = 0; i < channel(); i++) {
+          out << "{";
+          for (unsigned int j = 0; j < height(); j++) {
+            out << "{";
+            for (unsigned int l = 0; l < width(); l++) {
+              if (l < channel() - 1)
+                out << std::setw(10) << std::setprecision(10)
+                    << this->getValue<float>(k, l, i, j) << ", ";
+              else
+                out << std::setw(10) << std::setprecision(10)
+                    << this->getValue<float>(k, l, i, j);
+            }
+            if (j < height() - 1)
+              out << "},";
+            else
+              out << "}";
+            out << std::endl;
+          }
+          if (i < channel() - 1)
+            out << "},";
+          else
+            out << "}";
+          out << std::endl;
+        }
+        if (k < batch() - 1)
+          out << "},";
+        else
+          out << "}";
         out << std::endl;
       }
-      out << "-------" << std::endl;
+      out << "}";
+    } else {
+      out << "{";
+      for (unsigned int k = 0; k < batch(); k++) {
+        out << "{";
+        for (unsigned int i = 0; i < height(); i++) {
+          out << "{";
+          for (unsigned int j = 0; j < width(); j++) {
+            out << "{";
+            for (unsigned int l = 0; l < channel(); l++) {
+              if (l < channel() - 1)
+                out << std::setw(10) << std::setprecision(10)
+                    << this->getValue<float>(k, l, i, j) << ", ";
+              else
+                out << std::setw(10) << std::setprecision(10)
+                    << this->getValue<float>(k, l, i, j);
+            }
+            if (j < width() - 1)
+              out << "},";
+            else
+              out << "}";
+            out << std::endl;
+          }
+          if (i < height() - 1)
+            out << "},";
+          else
+            out << "}";
+          out << std::endl;
+        }
+        if (k < batch() - 1)
+          out << "},";
+        else
+          out << "}";
+        out << std::endl;
+      }
+      out << "}";
     }
-    out.copyfmt(init);
+  } else {
+    for (uint i = 0; i < len; ++i) {
+      out << getData()<float>[i] << ", ";
+    }
   }
 }
 
@@ -1831,7 +2288,7 @@ void Tensor::read(std::ifstream &file) {
  * @brief Calculate average value according to the axis.
  */
 Tensor Tensor::average(unsigned int axis) const {
-  Tensor t;
+  Tensor t("", this->getFormat());
   return average(axis, t);
 }
 
@@ -1853,7 +2310,7 @@ Tensor &Tensor::average(unsigned int axis, Tensor &output) const {
 }
 
 Tensor Tensor::average(const std::vector<unsigned int> &axes) const {
-  Tensor t;
+  Tensor t("", this->getFormat());
   return average(axes, t);
 }
 
@@ -1862,7 +2319,7 @@ Tensor &Tensor::average(const std::vector<unsigned int> &axes,
   if (axes.empty())
     return this->average(output);
 
-  TensorDim ret_shape;
+  TensorDim ret_shape(getFormat());
   for (const auto &idx : axes) {
     if (idx >= TensorDim::MAXDIM) {
       throw std::out_of_range("axis more then MAXDIM is invalid");
@@ -1878,8 +2335,15 @@ Tensor &Tensor::average(const std::vector<unsigned int> &axes,
  */
 Tensor Tensor::average() const {
   Tensor result = *this;
-  result.reshape({1, 1, 1, dim.getDataLen()});
-  return result.average(3);
+  unsigned int axis = 0;
+  if (this->getFormat() == Tformat::NHWC) {
+    result.reshape({1, dim.getDataLen(), 1, 1, this->getFormat()});
+    axis = 1;
+  } else {
+    result.reshape({1, 1, 1, dim.getDataLen(), this->getFormat()});
+    axis = 3;
+  }
+  return result.average(axis);
 }
 
 /**
@@ -2021,10 +2485,18 @@ Tensor::BroadcastInfo Tensor::computeBroadcastInfo(const Tensor &m) const {
   const TensorDim m_dim = m.getDim();
 
   BroadcastInfo e;
+  e.fm = getFormat();
+
+  uint continuity[4] = {0, 1, 2, 3};
+  if (getFormat() == Tformat::NHWC) {
+    continuity[1] = 2;
+    continuity[2] = 3;
+    continuity[3] = 1;
+  }
 
   /// checking if given Tensor's can be broadcasted
   for (unsigned int i = 0; i < TensorDim::MAXDIM; ++i) {
-    if (dim.getTensorDim(i) == m_dim.getTensorDim(i)) {
+    if (dim.getTensorDim(continuity[i]) == m_dim.getTensorDim(continuity[i])) {
       e.strides[i] = m.strides[i];
       continue;
     }
@@ -2032,7 +2504,7 @@ Tensor::BroadcastInfo Tensor::computeBroadcastInfo(const Tensor &m) const {
     /// If given dimension is 1, it could be reused, the stride remaining 0
     /// Need to check if dim[i] == 1 && m_dim[i] == 1 first though
     /// If so, strides should not change
-    if (m_dim.getTensorDim(i) == 1) {
+    if (m_dim.getTensorDim(continuity[i]) == 1) {
       continue;
     }
 
@@ -2050,24 +2522,25 @@ Tensor::BroadcastInfo Tensor::computeBroadcastInfo(const Tensor &m) const {
 
   /// initiate buffer info with matching dimension strategy
   for (int axis = 3; axis >= 0; --axis) {
-    if (dim.getTensorDim(axis) != m_dim.getTensorDim(axis)) {
+    if (dim.getTensorDim(continuity[axis]) !=
+        m_dim.getTensorDim(continuity[axis])) {
       e.buffer_axis = axis;
       break;
     }
 
-    e.buffer_size *= dim.getTensorDim(axis);
+    e.buffer_size *= dim.getTensorDim(continuity[axis]);
   }
 
   /// check strategy that uses consecutive ones
-  if (m_dim.getTensorDim(3) == 1) {
+  if (m_dim.getTensorDim(continuity[3]) == 1) {
     unsigned int inner_loop_size = 1;
     int axis;
     for (axis = 3; axis >= 0; --axis) {
-      if (m_dim.getTensorDim(axis) != 1) {
+      if (m_dim.getTensorDim(continuity[axis]) != 1) {
         break;
       }
 
-      inner_loop_size *= dim.getTensorDim(axis);
+      inner_loop_size *= dim.getTensorDim(continuity[axis]);
     }
 
     /// if consecutive-one strategy has bigger chunk size, replace the

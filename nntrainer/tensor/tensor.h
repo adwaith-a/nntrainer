@@ -56,10 +56,6 @@
 namespace nntrainer {
 
 using TensorDim = ml::train::TensorDim;
-
-/**
- * @brief    NHWC is WIP
- */
 using Tformat = ml::train::TensorDim::Format;
 using Tdatatype = ml::train::TensorDim::DataType;
 
@@ -123,9 +119,9 @@ public:
   /**
    * @brief     Constructor of Tensor
    * @param[in] d0 Batch of Tensor
-   * @param[in] d1 Channel (NCHW) or Height (NHWC)
-   * @param[in] d2 Height (NCHW) or Width (NHWC)
-   * @param[in] d3 Width (NCHW) or Channel (NHWC)
+   * @param[in] d1 Channel
+   * @param[in] d2 Height
+   * @param[in] d3 Width
    */
   Tensor(size_t d0, size_t d1, size_t d2, size_t d3, Tformat fm = Tformat::NCHW,
          Tdatatype d_type = Tdatatype::FP32) :
@@ -173,9 +169,9 @@ public:
 
   /**
    * @brief     Constructor of Tensor
-   * @param[in] d1 Channel (NCHW) or Height (NHWC)
-   * @param[in] d2 Height (NCHW) or Width (NHWC)
-   * @param[in] d3 Width (NCHW) or Channel (NHWC)
+   * @param[in] d1 Channel
+   * @param[in] d2 Height
+   * @param[in] d3 Width
    */
   Tensor(size_t d1, size_t d2, size_t d3, ml::train::TensorDim::TensorType t_type) :
     Tensor(1, d1, d2, d3, t_type){};
@@ -185,35 +181,46 @@ public:
    * @param[in] d2 Height (NCHW) or Width (NHWC)
    * @param[in] d3 Width (NCHW) or Channel (NHWC)
    */
-  Tensor(size_t d2, size_t d3,ml::train::TensorDim::TensorType t_type) :
-    Tensor(1, 1, d2, d3, t_type){};
-
+  Tensor(size_t d2, size_t d3, ml::train::TensorDim::TensorType t_type) :
+    Tensor(1, (t_type.format == Tformat::NCHW) ? 1 : d3,
+           (t_type.format == Tformat::NCHW) ? d2 : 1,
+           (t_type.format == Tformat::NCHW) ? d3 : d2, t_type){};
   /**
    * @brief     Constructor of Tensor with just Width or Channel
    * @param[in] d3 Width (NCHW) or Channel (NHWC)
    */
   explicit Tensor(size_t d3, ml::train::TensorDim::TensorType t_type) :
-    Tensor(1, 1, 1, d3, t_type){};
+    Tensor(1, (t_type.format == Tformat::NCHW) ? 1 : d3, 1,
+           (t_type.format == Tformat::NCHW) ? d3 : 1, t_type){};
   
-
   /**
    * @brief     Constructor of Tensor
-   * @param[in] d data for the Tensor
+   * @param[in] d data for the Tensor. It needs to set format properly.
    */
-  Tensor(std::vector<std::vector<std::vector<std::vector<float>>>> const &d) {
+
+  Tensor(std::vector<std::vector<std::vector<std::vector<float>>>> const &d,
+         Tformat fm) {
 
     if (d.empty() || d[0].empty() || d[0][0].empty() || d[0][0][0].empty()) {
       throw std::out_of_range(
         "[Tensor] trying to initialize Tensor from empty vector");
     }
+    // if fm == Tformat::NCHW, then dim[0] == batch , dim[1] == channel, dim[2]
+    // == height, dim[3] == width. and if fm == Tformat::NHWC, dim[0] == batch,
+    // dim[1] == height, dim[2] == width, dim[3] == channel
+    dim.setTensorDim(0, d.size());
+    if (fm == Tformat::NCHW) {
+      dim.setTensorDim(1, d[0].size());
+      dim.setTensorDim(2, d[0][0].size());
+      dim.setTensorDim(3, d[0][0][0].size());
+    } else {
+      dim.setTensorDim(2, d[0].size());
+      dim.setTensorDim(3, d[0][0].size());
+      dim.setTensorDim(1, d[0][0][0].size());
+    }
 
-    dim.batch(d.size());
-    dim.channel(d[0].size());
-    dim.height(d[0][0].size());
-    dim.width(d[0][0][0].size());
-    strides = dim.computeStrides();
-
-    MemoryData* mem_data = new MemoryData((void *)(new float[dim.getDataLen()]()));
+    MemoryData *mem_data =
+      new MemoryData((void *)(new float[dim.getDataLen()]()));
     data = std::shared_ptr<MemoryData>(mem_data, [](MemoryData *mem_data) {
       delete[] mem_data->getAddr<float>();
     });
@@ -223,44 +230,62 @@ public:
 
     setDataType(Tdatatype::FP32);
 
-    for (unsigned int i = 0; i < dim.batch(); ++i)
-      for (unsigned int j = 0; j < dim.channel(); ++j)
-        for (unsigned int k = 0; k < dim.height(); ++k)
-          for (unsigned int l = 0; l < dim.width(); ++l) {
-            this->setValue(i, j, k, l, d[i][j][k][l]);
-          }
+    // if fm == Tformat::NCHW, then dim[0] == batch , dim[1] == channel, dim[2]
+    // == height, dim[3] == width. and if fm == Tformat::NHWC, dim[0] == batch,
+    // dim[1] == height, dim[2] == width, dim[3] == channel
+    if (fm == Tformat::NCHW) {
+      for (unsigned int i = 0; i < batch(); ++i)
+        for (unsigned int j = 0; j < channel(); ++j)
+          for (unsigned int k = 0; k < height(); ++k)
+            for (unsigned int l = 0; l < width(); ++l)
+              this->setValue(i, j, k, l, d[i][j][k][l]);
+    } else {
+      for (unsigned int i = 0; i < batch(); ++i)
+        for (unsigned int j = 0; j < height(); ++j)
+          for (unsigned int k = 0; k < width(); ++k)
+            for (unsigned int l = 0; l < channel(); ++l)
+              this->setValue(i, l, j, k, d[i][j][k][l]);
+    }
   };
 
   /**
    * @brief     Constructor of Tensor
    * @note      This constructor copies vector again. needs refactoring
-   * @param[in] d data for the Tensor
+   * @param[in] d data for the Tensor. It needs to set format properly.
    */
-  Tensor(std::vector<std::vector<std::vector<float>>> const &d) :
-    Tensor(std::vector<std::decay<decltype(d)>::type>{d}){};
+  Tensor(std::vector<std::vector<std::vector<float>>> const &d,
+         Tformat fm = Tformat::NCHW) :
+    Tensor(std::vector<std::decay<decltype(d)>::type>{d}, fm){};
 
   /**
    * @brief     Constructor of Tensor
    * @note      This constructor copies vector again. needs refactoring
    * @param[in] d data for the Tensor with batch size one
    */
-  Tensor(std::vector<std::vector<float>> const &d) :
-    Tensor(std::vector<std::decay<decltype(d)>::type>{d}){};
+  Tensor(std::vector<std::vector<float>> const &d, Tformat fm = Tformat::NCHW) :
+    Tensor(std::vector<std::decay<decltype(d)>::type>{d}, fm){};
 
-  Tensor(std::vector<std::vector<std::vector<std::vector<__fp16>>>> const &d) {
+  Tensor(std::vector<std::vector<std::vector<std::vector<__fp16>>>> const &d,
+         Tformat fm) {
 
     if (d.empty() || d[0].empty() || d[0][0].empty() || d[0][0][0].empty()) {
       throw std::out_of_range(
         "[Tensor] trying to initialize Tensor from empty vector");
     }
 
-    dim.batch(d.size());
-    dim.channel(d[0].size());
-    dim.height(d[0][0].size());
-    dim.width(d[0][0][0].size());
-    strides = dim.computeStrides();
+    dim.setTensorDim(0, d.size());
+    if (fm == Tformat::NCHW) {
+      dim.setTensorDim(1, d[0].size());
+      dim.setTensorDim(2, d[0][0].size());
+      dim.setTensorDim(3, d[0][0][0].size());
+    } else {
+      dim.setTensorDim(2, d[0].size());
+      dim.setTensorDim(3, d[0][0].size());
+      dim.setTensorDim(1, d[0][0][0].size());
+    }
 
-    MemoryData* mem_data = new MemoryData((void *)(new __fp16[dim.getDataLen()]()));
+    MemoryData *mem_data =
+      new MemoryData((void *)(new __fp16[dim.getDataLen()]()));
     data = std::shared_ptr<MemoryData>(mem_data, [](MemoryData *mem_data) {
       delete[] mem_data->getAddr<__fp16>();
     });
@@ -270,11 +295,22 @@ public:
 
     setDataType(Tdatatype::FP16);
 
-    for (unsigned int i = 0; i < dim.batch(); ++i)
-      for (unsigned int j = 0; j < dim.channel(); ++j)
-        for (unsigned int k = 0; k < dim.height(); ++k)
-          for (unsigned int l = 0; l < dim.width(); ++l)
-            this->setValue(i, j, k, l, d[i][j][k][l]);
+    // if fm == Tformat::NCHW, then dim[0] == batch , dim[1] == channel, dim[2]
+    // == height, dim[3] == width. and if fm == Tformat::NHWC, dim[0] == batch,
+    // dim[1] == height, dim[2] == width, dim[3] == channel
+    if (fm == Tformat::NCHW) {
+      for (unsigned int i = 0; i < batch(); ++i)
+        for (unsigned int j = 0; j < channel(); ++j)
+          for (unsigned int k = 0; k < height(); ++k)
+            for (unsigned int l = 0; l < width(); ++l)
+              this->setValue(i, j, k, l, d[i][j][k][l]);
+    } else {
+      for (unsigned int i = 0; i < batch(); ++i)
+        for (unsigned int j = 0; j < height(); ++j)
+          for (unsigned int k = 0; k < width(); ++k)
+            for (unsigned int l = 0; l < channel(); ++l)
+              this->setValue(i, l, j, k, d[i][j][k][l]);
+    }
   };
 
   /**
@@ -282,16 +318,18 @@ public:
    * @note      This constructor copies vector again. needs refactoring
    * @param[in] d data for the Tensor
    */
-  Tensor(std::vector<std::vector<std::vector<__fp16>>> const &d) :
-    Tensor(std::vector<std::decay<decltype(d)>::type>{d}){};
+  Tensor(std::vector<std::vector<std::vector<__fp16>>> const &d,
+         Tformat fm = Tformat::NCHW) :
+    Tensor(std::vector<std::decay<decltype(d)>::type>{d}, fm){};
 
   /**
    * @brief     Constructor of Tensor
    * @note      This constructor copies vector again. needs refactoring
    * @param[in] d data for the Tensor with batch size one
    */
-  Tensor(std::vector<std::vector<__fp16>> const &d) :
-    Tensor(std::vector<std::decay<decltype(d)>::type>{d}){};
+  Tensor(std::vector<std::vector<__fp16>> const &d,
+         Tformat fm = Tformat::NCHW) :
+    Tensor(std::vector<std::decay<decltype(d)>::type>{d}, fm){};
 
   /**
    *  @brief  Copy constructor of Tensor.
@@ -1215,6 +1253,15 @@ public:
   void print(std::ostream &out) const;
 
   /**
+   * @brief     Print element
+   * @param[in] out out stream
+   * @param[in] opt print formatting option. opt=0 would pretty print the data,
+   * else it would print the raw data.
+   * @retval    Tensor
+   */
+  void print_(std::ostream &out, uint opt = 0) const;
+
+  /**
    * @brief     Get size of current tensor
    * @retval    unsigned int size of the current tensor
    */
@@ -1645,7 +1692,28 @@ public:
    */
   inline size_t getIndex(unsigned int b, unsigned int c, unsigned int h,
                          unsigned int w) const noexcept {
-    return (b * strides[0] + c * strides[1] + h * strides[2] + w * strides[3]);
+    if (getFormat() == Tformat::NCHW)
+      return (b * strides[0] + c * strides[1] + h * strides[2] +
+              w * strides[3]);
+    else
+      return (b * strides[0] + h * strides[1] + w * strides[2] +
+              c * strides[3]);
+  }
+
+  /**
+   * @brief Check if two given axes are contiguous
+   */
+  bool checkContinuous(unsigned int n, unsigned int np1) const {
+    std::vector<unsigned int> continuous_order_nhwc = {0, 3, 1, 2};
+    bool continuous = false;
+    if (getFormat() == Tformat::NHWC) {
+      if (continuous_order_nhwc[np1] == continuous_order_nhwc[n] + 1)
+        continuous = true;
+    } else {
+      if (n + 1 == np1)
+        continuous = true;
+    }
+    return continuous;
   }
 
   /**
