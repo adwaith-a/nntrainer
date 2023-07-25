@@ -237,8 +237,10 @@ void Tensor::setRandNormal(float mean, float std) {
     setDist<float, std::normal_distribution<float>>(
       std::normal_distribution<float>(mean, std));
   } else if (this->getDataType() == ml::train::TensorDim::DataType::FP16) {
-    throw std::invalid_argument(
-      "__fp16 is not supported by std::normal_distribution");
+    // throw std::invalid_argument(
+    //   "__fp16 is not supported by std::normal_distribution");
+    setDist<__fp16, std::normal_distribution<float>>(
+      std::normal_distribution<float>(mean, std));
   }
 }
 
@@ -247,8 +249,11 @@ void Tensor::setRandUniform(float min, float max) {
     setDist<float, std::uniform_real_distribution<float>>(
       std::uniform_real_distribution<float>(min, max));
   } else if (this->getDataType() == ml::train::TensorDim::DataType::FP16) {
-    throw std::invalid_argument(
-      "__fp16 is not supported by std::uniform_real_distribution");
+    //   throw std::invalid_argument(
+    //     "__fp16 is not supported by std::uniform_real_distribution");
+    // }
+    setDist<__fp16, std::uniform_real_distribution<float>>(
+      std::uniform_real_distribution<float>(min, max));
   }
 }
 
@@ -272,9 +277,9 @@ void Tensor::initialize() {
 
   unsigned int fan_in, fan_out;
 
-  /// @fixme: when unit is equal to one, this does not work, we need to rely on
-  /// effective dimension then actual numbers here. For now, some heuristics
-  /// added to infer what would be fan_in/fan_out
+  /// @fixme: when unit is equal to one, this does not work, we need to rely
+  /// on effective dimension then actual numbers here. For now, some
+  /// heuristics added to infer what would be fan_in/fan_out
   if (dim.batch() * dim.channel() * dim.height() == 1) {
     fan_out = fan_in = dim.width();
   } else if (dim.batch() * dim.channel() == 1) { /// fc layer - 2-D tensor
@@ -567,7 +572,8 @@ Tensor &Tensor::add_strided(Tensor const &m, Tensor &output,
           }
         }
       } else {
-        /** @todo optimize this with combining these loops where stride is 1 */
+        /** @todo optimize this with combining these loops where stride is 1
+         */
         for (unsigned int b = 0; b < batch(); ++b) {
           for (unsigned int c = 0; c < channel(); ++c) {
             for (unsigned int h = 0; h < height(); ++h) {
@@ -1101,11 +1107,11 @@ Tensor Tensor::getBatchSlice(size_t offset, unsigned int size) const {
 void Tensor::createSharedDataTensor(const Tensor &src, Tensor &dest,
                                     size_t offset) {
   /**
-   * - If src already has data allocaed, then directly make dest tensor based on
-   * the src tensor.
+   * - If src already has data allocaed, then directly make dest tensor based
+   * on the src tensor.
    * - If src.data does not exist (meaning tensor does not memory allocated),
-   * and src.src_tensor does not exist (meaning the src tensor does not depened
-   * on another tensor), then create a SrcSharedTensor around the src.
+   * and src.src_tensor does not exist (meaning the src tensor does not
+   * depened on another tensor), then create a SrcSharedTensor around the src.
    * - If src.src_tensor exists, then use the src.src_tensor to create the
    *  required SrcSharedTensor to avoid recursive dependency.
    *
@@ -1147,8 +1153,8 @@ Tensor Tensor::getSharedDataTensor(const TensorDim dim_, size_t offset,
     ret.contiguous = false;
 
   /**
-   * In this case, its the caller's responsibility to ensure that allocate() is
-   * called for the output tensor before operating on the output tensor.
+   * In this case, its the caller's responsibility to ensure that allocate()
+   * is called for the output tensor before operating on the output tensor.
    */
   createSharedDataTensor(*this, ret, offset);
 
@@ -1399,7 +1405,8 @@ Tensor Tensor::cat(const std::vector<Tensor> &tensors, int axis) {
                                return ref_dim == cur_dim;
                              }),
                 std::invalid_argument)
-    << " all tensor must have the same dimension except for the axis, ref_dim: "
+    << " all tensor must have the same dimension except for the axis, "
+       "ref_dim: "
     << ref_dim << " axis : " << axis;
 
   auto axis_dim = std::accumulate(tensors.begin(), tensors.end(), 0u,
@@ -1537,12 +1544,12 @@ void Tensor::makeSharedDataTensor(const Tensor &src, size_t offset) {
       "Creating shared tensor of different stride than source tensor.");
 
   if (getDim().getDataLen() + offset > src.getDim().getDataLen())
-    throw std::invalid_argument(
-      "Creating shared tensor of different size or stride than source tensor.");
+    throw std::invalid_argument("Creating shared tensor of different size or "
+                                "stride than source tensor.");
 
   /**
-   * In this case, its the caller's responsibility to ensure that allocate() is
-   * called for the output tensor before operating on the output tensor.
+   * In this case, its the caller's responsibility to ensure that allocate()
+   * is called for the output tensor before operating on the output tensor.
    */
   createSharedDataTensor(src, *this, offset);
 }
@@ -2082,15 +2089,15 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
   NNTR_THROW_IF(!contiguous, std::invalid_argument)
     << getName() << " is not contiguous. Cannot dot product.";
 
-  // Comment out with intension to support the calculation wrt. batch and height
-  // direction. It supposes to have this->dim as [ BxCxH,W ] and m.dim is
-  // [BxCxH,W] as well if (m.dim.rank() > 2) {
+  // Comment out with intension to support the calculation wrt. batch and
+  // height direction. It supposes to have this->dim as [ BxCxH,W ] and m.dim
+  // is [BxCxH,W] as well if (m.dim.rank() > 2) {
   //   throw exception::not_supported("Error: support only for rank of dot "
   //                                  "matrix <= 2");
   // }
 
-  // Comment out with intension to support the calculation wrt. batch and height
-  // direction of this tensor. It is OK as long as m is 2D
+  // Comment out with intension to support the calculation wrt. batch and
+  // height direction of this tensor. It is OK as long as m is 2D
   //
   if (trans && dim.rank() > 2) {
     ml_logw("Warning: support only for rank of dot matrix <= 2 with trans");
@@ -2201,8 +2208,8 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
             rdata, 1);
     }
     /// case3: (1 * K) X (K * N) = 1 * N = R
-    /// = R^T = (K * N) ^T * (1 * K) ^T = (N * K) * (K * 1) = (N * K) * (1 * K)
-    /// Effectively a translation of sgemv
+    /// = R^T = (K * N) ^T * (1 * K) ^T = (N * K) * (K * 1) = (N * K) * (1 *
+    /// K) Effectively a translation of sgemv
     else if (M == 1) {
       transB = transB == CblasTrans ? CblasNoTrans : CblasTrans;
       sgemv(CblasRowMajor, transB, mdim1, mdim2, alpha, mdata, ldb, data, 1,
@@ -2238,8 +2245,8 @@ Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
             rdata, 1);
     }
     /// case3: (1 * K) X (K * N) = 1 * N = R
-    /// = R^T = (K * N) ^T * (1 * K) ^T = (N * K) * (K * 1) = (N * K) * (1 * K)
-    /// Effectively a translation of sgemv
+    /// = R^T = (K * N) ^T * (1 * K) ^T = (N * K) * (K * 1) = (N * K) * (1 *
+    /// K) Effectively a translation of sgemv
     else if (M == 1) {
       transB = transB == CblasTrans ? CblasNoTrans : CblasTrans;
       sgemv(CblasRowMajor, transB, mdim1, mdim2, alpha, mdata, ldb, data, 1,
@@ -2515,7 +2522,8 @@ void Tensor::zoneout_mask(Tensor &opposite, float zoneout) {
 //   return apply(f, result);
 // }
 
-// Tensor &Tensor::apply(std::function<float(float)> f, Tensor &output) const {
+// Tensor &Tensor::apply(std::function<float(float)> f, Tensor &output) const
+// {
 //   CREATE_IF_EMPTY_DIMS(output, dim);
 
 //   if (dim != output.dim) {
@@ -2770,7 +2778,8 @@ void Tensor::copy(const void *buf) {
     }
   }
   // std::string type_ =
-  //   (getDataType() == ml::train::TensorDim::DataType::FP16) ? "FP16" : "NO";
+  //   (getDataType() == ml::train::TensorDim::DataType::FP16) ? "FP16" :
+  //   "NO";
   // std::cout << type_ << std::endl;
 
   if (getDataType() == ml::train::TensorDim::DataType::FP16) {

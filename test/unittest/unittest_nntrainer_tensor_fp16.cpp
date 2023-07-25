@@ -3725,22 +3725,21 @@ TEST(nntrainer_Tensor, tranpose_dimension_not_match_n) {
   EXPECT_THROW(a.transpose("0:1:2", b), std::invalid_argument);
 }
 
-// TEST(nntrainer_Tensor, set_01_p) {
-//   nntrainer::TensorDim::TensorType t_type;
-//   t_type.format = nntrainer::Tformat::NCHW;
-//   t_type.data_type = nntrainer::Tdatatype::FP16;
+TEST(nntrainer_Tensor, set_01_p) {
+  nntrainer::TensorDim::TensorType t_type;
+  t_type.format = nntrainer::Tformat::NCHW;
+  t_type.data_type = nntrainer::Tdatatype::FP16;
 
-//   nntrainer::Tensor tensor = nntrainer::Tensor(1, 1, 1, 1, t_type);
+  nntrainer::Tensor tensor = nntrainer::Tensor(1, 1, 1, 1, t_type);
 
-//   tensor.setZero();
-//   EXPECT_EQ(tensor.getValue<__fp16>(0, 0, 0, 0), 0.0);
+  tensor.setZero();
+  EXPECT_EQ(tensor.getValue<__fp16>(0, 0, 0, 0), 0.0);
 
-//   tensor.setRandUniform(-0.5, 0.0);
-//   std::cout << "val : " << tensor.getValue<__fp16>(0, 0, 0, 0) << std::endl;
+  tensor.setRandUniform(-0.5, 0.0);
 
-//   __fp16 val = tensor.getValue<__fp16>(0, 0, 0, 0);
-//   EXPECT_TRUE(val >= -0.5 && val < 0);
-// }
+  __fp16 val = tensor.getValue<__fp16>(0, 0, 0, 0);
+  EXPECT_TRUE(val >= -0.5 && val < 0);
+}
 
 TEST(nntrainer_Tensor, save_read_01_p) {
   int batch = 3;
@@ -3954,9 +3953,9 @@ TEST(nntrainer_Tensor, fill_p) {
   t_type.data_type = nntrainer::Tdatatype::FP16;
   {
     nntrainer::Tensor target(3, 2, 4, 5, t_type);
-    // nntrainer::Tensor original = randUniform(3, 2, 4, 5, -1.0f, 1.0f);
     nntrainer::Tensor original =
-      ranged(3, 2, 4, 5, nntrainer::Tformat::NCHW, nntrainer::Tdatatype::FP16);
+      randUniform(3, 2, 4, 5, -1.0f, 1.0f, nntrainer::Tformat::NCHW,
+                  nntrainer::Tdatatype::FP16);
     target.fill(original, false);
 
     EXPECT_EQ(target, original);
@@ -3971,9 +3970,10 @@ TEST(nntrainer_Tensor, fill_p) {
   /// uninitialized with initialized flag is true
   {
     nntrainer::Tensor target;
-    // nntrainer::Tensor original = randUniform(3, 2, 4, 5, -1.0f, 1.0f);
     nntrainer::Tensor original =
-      ranged(3, 5, 4, 2, nntrainer::Tformat::NCHW, nntrainer::Tdatatype::FP16);
+      randUniform(3, 2, 4, 5, -1.0f, 1.0f, nntrainer::Tformat::NCHW,
+                  nntrainer::Tdatatype::FP16);
+
     target.fill(original, true);
 
     EXPECT_EQ(target, original);
@@ -3982,9 +3982,10 @@ TEST(nntrainer_Tensor, fill_p) {
 
 TEST(nntrainer_Tensor, fill_uninitialized_n) {
   nntrainer::Tensor target;
-  // nntrainer::Tensor original = randUniform(3, 1, 2, 3, -1.0f, 1.0f);
   nntrainer::Tensor original =
-    ranged(3, 5, 4, 2, nntrainer::Tformat::NCHW, nntrainer::Tdatatype::FP16);
+    randUniform(3, 1, 2, 3, -1.0f, 1.0f, nntrainer::Tformat::NCHW,
+                nntrainer::Tdatatype::FP16);
+
   EXPECT_THROW(target.fill(original, false), std::invalid_argument);
 }
 
@@ -3994,9 +3995,10 @@ TEST(nntrainer_Tensor, fill_different_dimension_n) {
   t_type.data_type = nntrainer::Tdatatype::FP16;
 
   nntrainer::Tensor target(3, 1, 3, 2, t_type);
-  // nntrainer::Tensor original = randUniform(3, 1, 2, 3, -1.0f, 1.0f);
   nntrainer::Tensor original =
-    ranged(3, 1, 2, 3, nntrainer::Tformat::NCHW, nntrainer::Tdatatype::FP16);
+    randUniform(3, 1, 2, 3, -1.0f, 1.0f, nntrainer::Tformat::NCHW,
+                nntrainer::Tdatatype::FP16);
+
   EXPECT_THROW(target.fill(original, false), std::invalid_argument);
 }
 
@@ -4199,11 +4201,10 @@ TEST(nntrainer_Tensor, initialize_08_p) {
   EXPECT_EQ(golden, t);
 
   /// @todo this test case is not valid anymore, since
-  /// std::uniform_real_distribution does not support __fp16
-  // t.initialize(nntrainer::Tensor::Initializer::HE_NORMAL);
-  // EXPECT_NE(golden, t);
-  // t.initialize();
-  // EXPECT_NE(golden, t);
+  t.initialize(nntrainer::Tensor::Initializer::HE_NORMAL);
+  EXPECT_NE(golden, t);
+  t.initialize();
+  EXPECT_NE(golden, t);
 
   t.initialize(nntrainer::Tensor::Initializer::ONES);
   EXPECT_EQ(golden, t);
@@ -4775,62 +4776,61 @@ TEST(nntrainer_Tensor, zoneout_mask_02_p) {
   }
 }
 
-// TEST(nntrainer_Tensor, zoneout_mask_03_p) {
-//   nntrainer::TensorDim::TensorType t_type;
-//   t_type.format = nntrainer::Tformat::NCHW;
-//   t_type.data_type = nntrainer::Tdatatype::FP16;
+TEST(nntrainer_Tensor, zoneout_mask_03_p) {
+  nntrainer::TensorDim::TensorType t_type;
+  t_type.format = nntrainer::Tformat::NCHW;
+  t_type.data_type = nntrainer::Tdatatype::FP16;
 
-//   const __fp16 zoneout_rate = (__fp16)0.3;
-//   nntrainer::Tensor t(10, 10, 100, 100, t_type);
-//   nntrainer::Tensor opposite = t.zoneout_mask(zoneout_rate);
-//   constexpr __fp16 epsilon = (__fp16)1e-3;
+  const __fp16 zoneout_rate = (__fp16)0.3;
+  nntrainer::Tensor t(10, 10, 100, 100, t_type);
+  nntrainer::Tensor opposite = t.zoneout_mask(zoneout_rate);
+  constexpr float epsilon = (__fp16)1e-3;
 
-//   auto is_near = [epsilon](__fp16 val1, __fp16 val2) {
-//     return val2 - epsilon < val1 && val1 < val2 + epsilon;
-//   };
-//   auto percentage = [](unsigned int dividend, unsigned int divisor) {
-//     return (__fp16)dividend / (__fp16)divisor;
-//   };
+  auto is_near = [epsilon](__fp16 val1, __fp16 val2) {
+    return (__fp16)(val2 - epsilon) < (__fp16)val1 &&
+           (__fp16)val1 < (__fp16)(val2 + epsilon);
+  };
+  auto percentage = [](unsigned int dividend, unsigned int divisor) {
+    return (__fp16)((float)dividend / (float)divisor);
+  };
 
-//   {
-//     unsigned int zeros = 0;
-//     unsigned int ones = 0;
-//     for (unsigned int i = 0; i < opposite.size(); ++i) {
-//       if (is_near(opposite.getValue<__fp16>(i), (__fp16)0.0)) {
-//         ++zeros;
-//       } else if (is_near(opposite.getValue<__fp16>(i), (__fp16)1.0)) {
-//         ++ones;
-//       } else {
-//         FAIL() << "This should not be happen";
-//       }
-//     }
-//     EXPECT_NEAR(percentage(zeros, opposite.size()),
-//                 (__fp16)((__fp16)1.0 - zoneout_rate), epsilon);
+  {
+    unsigned int zeros = 0;
+    unsigned int ones = 0;
+    for (unsigned int i = 0; i < opposite.size(); ++i) {
+      if (is_near(opposite.getValue<__fp16>(i), (__fp16)0.0)) {
+        ++zeros;
+      } else if (is_near(opposite.getValue<__fp16>(i), (__fp16)1.0)) {
+        ++ones;
+      } else {
+        FAIL() << "This should not be happen";
+      }
+    }
+    EXPECT_NEAR(percentage(zeros, opposite.size()), 1.0 - zoneout_rate,
+                epsilon);
 
-//     // main test
-//     EXPECT_NEAR(percentage(ones, opposite.size()), (__fp16)zoneout_rate,
-//                 epsilon);
-//   }
+    // main test
+    EXPECT_NEAR(percentage(ones, opposite.size()), zoneout_rate, epsilon);
+  }
 
-//   {
-//     unsigned int zeros = 0;
-//     unsigned int ones = 0;
-//     for (unsigned int i = 0; i < t.size(); ++i) {
-//       if (is_near(t.getValue<__fp16>(i), (__fp16)0.0)) {
-//         ++zeros;
-//       } else if (is_near(t.getValue<__fp16>(i), (__fp16)1.0)) {
-//         ++ones;
-//       } else {
-//         FAIL() << "This should not be happen";
-//       }
-//     }
-//     EXPECT_NEAR(percentage(zeros, t.size()), (__fp16)zoneout_rate, epsilon);
+  {
+    unsigned int zeros = 0;
+    unsigned int ones = 0;
+    for (unsigned int i = 0; i < t.size(); ++i) {
+      if (is_near(t.getValue<__fp16>(i), 0.0)) {
+        ++zeros;
+      } else if (is_near(t.getValue<__fp16>(i), 1.0)) {
+        ++ones;
+      } else {
+        FAIL() << "This should not be happen";
+      }
+    }
+    EXPECT_NEAR(percentage(zeros, t.size()), zoneout_rate, epsilon);
 
-//     // main test
-//     EXPECT_NEAR(percentage(ones, t.size()), (__fp16)(1.0f - zoneout_rate),
-//                 epsilon);
-//   }
-// }
+    // main test
+    EXPECT_NEAR(percentage(ones, t.size()), (1.0f - zoneout_rate), epsilon);
+  }
+}
 
 TEST(nntrainer_Tensor, zoneout_mask_04_n) {
   nntrainer::TensorDim::TensorType t_type;
@@ -4846,7 +4846,7 @@ TEST(nntrainer_Tensor, zoneout_mask_04_n) {
     return val2 - epsilon < val1 && val1 < val2 + epsilon;
   };
   auto percentage = [](unsigned int dividend, unsigned int divisor) {
-    return (__fp16)dividend / (__fp16)divisor;
+    return (__fp16)((float)dividend / (float)divisor);
   };
 
   {
