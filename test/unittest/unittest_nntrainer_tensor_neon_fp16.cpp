@@ -15,6 +15,7 @@
 #include "util_func.h"
 #include <cmath>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <nntrainer_error.h>
 #include <tensor.h>
@@ -46,7 +47,6 @@ TEST(nntrainer_Tensor, sum_02_p) {
 
   const float alpha = 1e-1;
   const float epsilon = 1e-3;
-  float mse = 0;
   float sum1 = 0;
   float sum2 = 0;
 
@@ -63,6 +63,41 @@ TEST(nntrainer_Tensor, sum_02_p) {
   nntrainer::Tensor result0 = input.sum(0);
   nntrainer::Tensor result0_loop = input_copy.sum_loop(0);
   nntrainer::Tensor result0_fp32 = input_fp32.sum(0);
+
+  // MSE & Cosine Similarity Evaluation
+  std::cout << std::setprecision(16);
+  // 1. FP32 VS NEON FP16
+  float mseErrorNeon = mse<__fp16>(
+    result0.getData<__fp16>(), result0_fp32.getData<float>(), result0.size());
+
+  double cosSimNeon = cosine_similarity<__fp16>(
+    result0.getData<__fp16>(), result0_fp32.getData<float>(), result0.size());
+
+  std::cout << "(FP32 VS NEON FP16) \n\tMSE : " << mseErrorNeon
+            << "\n\tCosine Similarity: " << cosSimNeon << std::endl;
+
+  // 2. FP32 VS LOOP FP16
+  float mseErrorLoop =
+    mse<__fp16>(result0_loop.getData<__fp16>(), result0_fp32.getData<float>(),
+                result0.size());
+  double cosSimLoop =
+    cosine_similarity<__fp16>(result0_loop.getData<__fp16>(),
+                              result0_fp32.getData<float>(), result0.size());
+
+  std::cout << "(FP32 VS LOOP FP16) \n\tMSE : " << mseErrorLoop
+            << "\n\tCosine Similarity: " << cosSimLoop << std::endl;
+
+  // 3. NEON FP16 VS LOOP FP16
+  float mseErrorFp16 = mse<__fp16>(result0_loop.getData<__fp16>(),
+                                   result0.getData<__fp16>(), result0.size());
+
+  double cosSimFp16 = cosine_similarity<__fp16>(
+    result0_loop.getData<__fp16>(), result0.getData<__fp16>(), result0.size());
+
+  std::cout << "(NEON FP16 VS LOOP FP16) \n\tMSE : " << mseErrorFp16
+            << "\n\tCosine Similarity: " << cosSimFp16 << std::endl;
+
+  std::cout << std::setprecision(6);
 
   float error1 = 0;
   float error2 = 0;
