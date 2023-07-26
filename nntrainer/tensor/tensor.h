@@ -978,6 +978,9 @@ public:
    * @retval    Calculated Tensor
    */
   Tensor sum(unsigned int axis, float alpha = 1.0) const;
+  Tensor sum_loop(unsigned int axis, float alpha = 1.0) const;
+  Tensor &sum_loop(unsigned int axis, Tensor &ret, float alpha = 1.0,
+                   float beta = 0.0) const;
 
   /**
    * @brief     sum all the Tensor elements according to the axis

@@ -35,6 +35,7 @@ enum CBLAS_TRANSPOSE {
 #include <helper_functions.h>
 #endif
 
+#include "arm_neon.h"
 #include <tensor_dim.h>
 
 namespace nntrainer {
@@ -58,6 +59,12 @@ void sgemv(CBLAS_ORDER order, CBLAS_TRANSPOSE TransA, const unsigned int M,
            const unsigned int lda, const __fp16 *X, const int incX,
            const float beta, __fp16 *Y, const int incY);
 unsigned int isamax(const unsigned int N, const __fp16 *X, const int incX);
+
+void sgemv_loop_fp16(CBLAS_ORDER order, CBLAS_TRANSPOSE TransA,
+                     const unsigned int M, const unsigned int N,
+                     const float alpha, const __fp16 *A, const unsigned int lda,
+                     const __fp16 *X, const int incX, const float beta,
+                     __fp16 *Y, const int incY);
 #endif
 
 void sscal(const unsigned int N, const float alpha, void *X, const int incX,
