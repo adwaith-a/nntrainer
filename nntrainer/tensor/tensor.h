@@ -38,6 +38,9 @@
 #include <memory_data.h>
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
+#include <opencl/cl_add_impl.hpp>
+#include <opencl/cl_dot_product_impl.hpp>
+#include <opencl/cl_sgemv_impl.hpp>
 #include <tensor_dim.h>
 #include <util_func.h>
 
@@ -864,7 +867,8 @@ public:
    * @retval #ML_ERROR_NONE  Successful
    * @retval #ML_ERROR_INVALID_PARAMETER Invalid Parameter
    */
-  int add_i(Tensor const &m, float const alpha = 1);
+  int add_i(Tensor const &m, float const alpha = 1,
+            internal::GpuCLAddImpl *gpu_add = nullptr);
 
   /**
    * @brief     Add Tensor Element by Element
@@ -998,7 +1002,8 @@ public:
    * @retval    Calculated Tensor
    */
   Tensor &dot(Tensor const &m, Tensor &output, bool trans = false,
-              bool trans_m = false, float beta = 0.0f) const;
+              bool trans_m = false, float beta = 0.0f,
+              internal::GpuCLDotProductImpl *gpu_dot_prod = nullptr) const;
 
   /**
    * @brief compute the derivative of this in the current tensor
@@ -1138,7 +1143,8 @@ public:
    * @retval    Calculated Tensor
    */
   Tensor &sum(unsigned int axis, Tensor &output, float alpha = 1.0,
-              float beta = 0.0) const;
+              float beta = 0.0,
+              internal::GpuCLSgemvImpl *gpu_sgemv = nullptr) const;
 
   /**
    * @brief sum all the Tensor by multiple axes

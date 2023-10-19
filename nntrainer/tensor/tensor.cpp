@@ -1017,26 +1017,60 @@ Tensor &Tensor::add(float const &value, Tensor &out) const {
   return out;
 }
 
-int Tensor::add_i(Tensor const &m, float const alpha) {
+int Tensor::add_i(Tensor const &m, float const alpha,
+                  internal::GpuCLAddImpl *gpu_add) {
   /// @todo: add axis rather doing add over the last two dimensions always
   /// operator i has optimized version
   if (dim.getDataType() == ml::train::TensorDim::DataType::FP32) {
-    auto f = [&](const BroadcastInfo &e, const float *buf, const float *m_buf,
-                 float *out_buf) {
-      saxpy(e.buffer_size, alpha, m_buf, e.strides[3], out_buf, strides[3]);
-    };
+    if (gpu_add == nullptr) {
+      auto f = [&](const BroadcastInfo &e, const float *buf, const float *m_buf,
+                   float *out_buf) {
+        saxpy(e.buffer_size, alpha, m_buf, e.strides[3], out_buf, strides[3]);
+      };
 
-    /// @todo: enable this after add_strided supports broadcast
-    // NNTR_THROW_IF(!contiguous || !m.contiguous, std::invalid_argument)
-    //   << getName() << " is not contiguous, cannot add";
+      /// @todo: enable this after add_strided supports broadcast
+      // NNTR_THROW_IF(!contiguous || !m.contiguous, std::invalid_argument)
+      //   << getName() << " is not contiguous, cannot add";
 
-    try {
-      apply_broadcast(m, f, *this);
-    } catch (std::exception &err) {
-      ml_loge("%s %s", typeid(err).name(), err.what());
-      return ML_ERROR_INVALID_PARAMETER;
+      try {
+        apply_broadcast(m, f, *this);
+      } catch (std::exception &err) {
+        ml_loge("%s %s", typeid(err).name(), err.what());
+        return ML_ERROR_INVALID_PARAMETER;
+      }
+    } else {
+      const float *buf = this->getData();
+      const float *m_buf = m.getData();
+      float *out_buf =
+        gpu_add->CLEleAddImpl<float>(buf, m_buf,
+                                     (int)(this->batch() * this->height() *
+                                           this->width() * this->channel()));
+      if (getFormat() == Tformat::NCHW) {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int c = 0; c < channel(); ++c) {
+            for (unsigned int h = 0; h < height(); ++h) {
+              for (unsigned int w = 0; w < width(); ++w) {
+                int index = b * strides[0] + c * strides[1] + h * strides[2] +
+                            w * strides[3];
+                setValue(b, c, h, w, out_buf[index]);
+              }
+            }
+          }
+        }
+      } else {
+        for (unsigned int b = 0; b < batch(); ++b) {
+          for (unsigned int h = 0; h < height(); ++h) {
+            for (unsigned int w = 0; w < width(); ++w) {
+              for (unsigned int c = 0; c < channel(); ++c) {
+                int index = b * strides[0] + h * strides[1] + w * strides[2] +
+                            c * strides[3];
+                setValue(b, c, h, w, out_buf[index]);
+              }
+            }
+          }
+        }
+      }
     }
-
   } else if (dim.getDataType() == ml::train::TensorDim::DataType::FP16) {
 #ifdef ENABLE_FP16
     auto f = [&](const BroadcastInfo &e, const _FP16 *buf, const _FP16 *m_buf,
@@ -1806,8 +1840,8 @@ Tensor Tensor::sum(unsigned int axis, float alpha) const {
   return sum(axis, ret, alpha, 0);
 }
 
-Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
-                    float beta) const {
+Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha, float beta,
+                    internal::GpuCLSgemvImpl *gpu_sgemv) const {
 
   if (getDataType() == ml::train::TensorDim::DataType::FP32) {
     const float *data = getData<float>();
@@ -1842,8 +1876,13 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
         unsigned int n = dim[1];
         Tensor ones(1, 1, 1, n, this->getTensorType());
         ones.setValue(alpha);
-        sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n,
-              ones.getData<float>(), 1, beta, ret.getData<float>(), 1);
+        if (gpu_sgemv == nullptr) {
+          sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n,
+                ones.getData<float>(), 1, beta, ret.getData<float>(), 1);
+        } else {
+          gpu_sgemv->CLSgemvImpl(data, (const float *)ones.getData<float>(),
+                                 ret.getData<float>(), 1.0f, beta, m, n);
+        }
       } else {
         unsigned int feat_len = dim[2] * dim[3];
         unsigned int t_axis = dim[1];
@@ -1851,9 +1890,16 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
         ones.setValue(alpha);
         float *rdata = ret.getData<float>();
         for (unsigned int k = 0; k < dim[0]; ++k) {
-          sgemv(CblasRowMajor, CblasTrans, t_axis, feat_len, 1,
-                &data[k * dim.getFeatureLen()], feat_len, ones.getData<float>(),
-                1, beta, &rdata[k * feat_len], 1);
+          if (gpu_sgemv == nullptr) {
+            sgemv(CblasRowMajor, CblasTrans, t_axis, feat_len, 1,
+                  &data[k * dim.getFeatureLen()], feat_len,
+                  ones.getData<float>(), 1, beta, &rdata[k * feat_len], 1);
+          } else {
+            gpu_sgemv->CLSgemvImpl(&data[k * dim.getFeatureLen()],
+                                   (const float *)ones.getData<float>(),
+                                   &rdata[k * feat_len], 1.0f, beta, t_axis,
+                                   feat_len);
+          }
         }
       }
     } break;
@@ -1909,8 +1955,13 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
         unsigned int n = dim[3];
         Tensor ones(1, 1, 1, n);
         ones.setValue(alpha);
-        sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n,
-              ones.getData<float>(), 1, beta, ret.getData<float>(), 1);
+        if (gpu_sgemv == nullptr) {
+          sgemv(CblasRowMajor, CblasNoTrans, m, n, 1, data, n,
+                ones.getData<float>(), 1, beta, ret.getData<float>(), 1);
+        } else {
+          gpu_sgemv->CLSgemvImpl(data, (const float *)ones.getData<float>(),
+                                 ret.getData<float>(), 1.0f, beta, m, n);
+        }
       }
     } break;
     default:
@@ -1940,6 +1991,7 @@ Tensor &Tensor::sum(unsigned int axis, Tensor &ret, float alpha,
       size_t batch = dim.batch();
       Tensor ones(1, 1, 1, batch, this->getTensorType());
       ones.setValue(alpha);
+
       sgemv(CblasRowMajor, CblasTrans, batch, feat_len, 1, data, feat_len,
             ones.getData<_FP16>(), 1, beta, ret.getData<_FP16>(), 1);
     } break;
@@ -2172,7 +2224,8 @@ Tensor &Tensor::dot_batched_deriv_wrt_2(Tensor &m_deriv,
  * in case of trans is false.
  */
 Tensor &Tensor::dot(Tensor const &m, Tensor &result, bool trans, bool trans_m,
-                    float beta) const {
+                    float beta,
+                    internal::GpuCLDotProductImpl *gpu_dot_prod) const {
   NNTR_THROW_IF(!contiguous, std::invalid_argument)
     << getName() << " is not contiguous. Cannot dot product.";
 

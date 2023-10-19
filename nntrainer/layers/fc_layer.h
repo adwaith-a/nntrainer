@@ -15,6 +15,8 @@
 #define __FC_LAYER_H__
 #ifdef __cplusplus
 
+#include "opencl/cl_add_impl.hpp"
+#include "opencl/cl_dot_product_impl.hpp"
 #include <common_properties.h>
 #include <layer_impl.h>
 
@@ -99,6 +101,9 @@ private:
   std::tuple<props::Unit>
     fc_props; /**< fc layer properties : unit - number of output neurons */
   std::array<unsigned int, 2> weight_idx; /**< indices of the weights */
+  static internal::GpuCLDotProductImpl
+    gpu_dot_prod;                        /**< gpu dot product class instance */
+  static internal::GpuCLAddImpl gpu_add; /**< gpu add class instance */
 };
 } // namespace nntrainer
 

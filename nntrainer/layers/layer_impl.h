@@ -89,6 +89,8 @@ protected:
                props::WeightInitializer, props::WeightDecay, props::BiasDecay,
                props::BiasInitializer, props::DisableBias>>
     layer_impl_props; /**< layer_impl_props */
+
+  bool on_gpu; /** specifies whether the layer runs on gpu */
 };
 
 } // namespace nntrainer

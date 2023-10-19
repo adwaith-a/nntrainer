@@ -21,6 +21,7 @@
  *
  */
 
+#include <chrono>
 #include <common_properties.h>
 #include <fc_layer.h>
 #include <layer_context.h>
@@ -28,11 +29,16 @@
 #include <nntrainer_error.h>
 #include <nntrainer_log.h>
 #include <node_exporter.h>
+#include <opencl/cl_add_impl.hpp>
+#include <opencl/cl_dot_product_impl.hpp>
 #include <util_func.h>
 
 namespace nntrainer {
 
 static constexpr size_t SINGLE_INOUT_IDX = 0;
+
+internal::GpuCLDotProductImpl FullyConnectedLayer::gpu_dot_prod;
+internal::GpuCLAddImpl FullyConnectedLayer::gpu_add;
 
 enum FCParams { weight, bias };
 
@@ -96,6 +102,17 @@ void FullyConnectedLayer::finalize(InitLayerContext &context) {
       context.requestWeight(bias_dim, bias_initializer, WeightRegularizer::NONE,
                             1.0f, bias_decay, "bias", true);
   }
+
+  std::chrono::steady_clock::time_point begin =
+    std::chrono::steady_clock::now();
+  on_gpu = gpu_add.Init();
+  std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+
+  std::cout
+    << "init time = "
+    << std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count()
+    << "[ns]" << std::endl;
+  // on_gpu = false;
 }
 
 void FullyConnectedLayer::exportTo(
@@ -142,7 +159,33 @@ void FullyConnectedLayer::forwarding(RunLayerContext &context, bool training) {
   if (auto &disable_bias = std::get<props::DisableBias>(*layer_impl_props);
       disable_bias.empty() || disable_bias.get() == false) {
     Tensor &bias = context.getWeight(weight_idx[FCParams::bias]);
-    hidden_.add_i(bias);
+    if (on_gpu) {
+      float alpha = 1;
+      std::chrono::steady_clock::time_point begin =
+        std::chrono::steady_clock::now();
+      hidden_.add_i(bias, alpha, &gpu_add);
+      std::chrono::steady_clock::time_point end =
+        std::chrono::steady_clock::now();
+
+      std::cout << "GPU exec time = "
+                << std::chrono::duration_cast<std::chrono::nanoseconds>(end -
+                                                                        begin)
+                     .count()
+                << "[ns]" << std::endl;
+
+    } else {
+      std::chrono::steady_clock::time_point begin =
+        std::chrono::steady_clock::now();
+      hidden_.add_i(bias);
+      std::chrono::steady_clock::time_point end =
+        std::chrono::steady_clock::now();
+
+      std::cout << "CPU exec time = "
+                << std::chrono::duration_cast<std::chrono::nanoseconds>(end -
+                                                                        begin)
+                     .count()
+                << "[ns]" << std::endl;
+    }
   }
 }
 

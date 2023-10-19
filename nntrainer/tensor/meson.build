@@ -17,12 +17,22 @@ tensor_sources = [
   'optimized_v2_planner.cpp',
   'optimized_v3_planner.cpp',
   'task_executor.cpp',
+  'opencl/cl_add_impl.cpp',
+  'opencl/cl_dot_product_impl.cpp',
+  'opencl/cl_sgemv_impl.cpp',
+  'opencl/opencl_buffer.cpp',
+  'opencl/opencl_command_queue_manager.cpp',
+  'opencl/opencl_context_manager.cpp',
+  'opencl/opencl_kernel.cpp',
+  'opencl/opencl_loader.cpp',
+  'opencl/opencl_program.cpp',
 ]
 
 tensor_headers = [
   'memory_data.h',
   'tensor.h',
-  'tensor_wrap_specs.h'
+  'tensor_wrap_specs.h',
+  'opencl/CL/cl_platform.h'
 ]
 
 arch = target_machine.cpu_family()
